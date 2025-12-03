@@ -252,6 +252,81 @@ namespace Il2Cpp {
             }
         }
 
+        invokeSafe(...parameters: Il2Cpp.Parameter.Type[]): T {
+            if (!this.isStatic) {
+                raise(`cannot invoke non-static method ${this.name} as it must be invoked through a Il2Cpp.Object, not a Il2Cpp.Class`);
+            }
+            return this.invokeRawSafe(NULL, ...parameters);
+        }
+
+        /** @internal */
+        invokeRawSafe(instance: NativePointerValue, ...parameters: Il2Cpp.Parameter.Type[]): T {
+            // パラメータを準備
+            const parametersArray = parameters.length > 0 
+                ? Memory.alloc(Process.pointerSize * parameters.length) 
+                : NULL;
+            
+            for (let i = 0; i < parameters.length; i++) {
+                const parameter = parameters[i];
+                const parameterType = this.parameters[i]?.type;
+                
+                if (!parameterType) {
+                    raise(`couldn't get type for parameter at index ${i} in method ${this.name}`);
+                }
+                
+                // パラメータの値をメモリに書き込む
+                let valueHandle: NativePointer;
+                
+                if (parameter instanceof Il2Cpp.ValueType) {
+                    valueHandle = parameter.handle;
+                } else if (parameter instanceof Il2Cpp.Object || parameter instanceof Il2Cpp.String || parameter instanceof Il2Cpp.Array) {
+                    valueHandle = parameter.handle;
+                } else if (typeof parameter === 'boolean' || typeof parameter === 'number' || parameter instanceof Int64 || parameter instanceof UInt64) {
+                    // プリミティブ型の場合はメモリに書き込む
+                    const size = parameterType.class.valueTypeSize;
+                    valueHandle = Memory.alloc(size);
+                    write(valueHandle, parameter, parameterType);
+                } else if (parameter instanceof NativePointer) {
+                    const size = Process.pointerSize;
+                    valueHandle = Memory.alloc(size);
+                    valueHandle.writePointer(parameter);
+                } else {
+                    raise(`unsupported parameter type for parameter at index ${i} in method ${this.name}`);
+                }
+                
+                // パラメータ配列にポインタを格納
+                parametersArray.add(i * Process.pointerSize).writePointer(valueHandle);
+            }
+            
+            // 例外を受け取るためのポインタ
+            const exceptionPtr = Memory.alloc(Process.pointerSize);
+            exceptionPtr.writePointer(NULL);
+            
+            // il2cpp_runtime_invokeを呼び出す
+            const resultHandle = Il2Cpp.exports.runtimeInvoke(
+                this.handle,
+                instance,
+                parametersArray,
+                exceptionPtr
+            );
+            
+            // 例外が発生したかチェック
+            const exception = exceptionPtr.readPointer();
+            if (!exception.isNull()) {
+                const exceptionObject = new Il2Cpp.Object(exception);
+                const message = exceptionObject.method<Il2Cpp.String>("ToString").invoke().content;
+                raise(`IL2CPP Exception: ${message}`);
+            }
+            
+            // 戻り値を変換
+            if (this.returnType.enumValue === Il2Cpp.Type.Enum.VOID) {
+                return undefined as T;
+            }
+            
+            // 戻り値を適切な型に変換
+            return fromFridaValue(resultHandle, this.returnType) as T;
+        }
+
         /** Gets the overloaded method with the given parameter types. */
         overload(...typeNamesOrClasses: (string | Il2Cpp.Class)[]): Il2Cpp.Method<T> {
             const method = this.tryOverload<T>(...typeNamesOrClasses);
@@ -404,6 +479,17 @@ ${this.virtualAddress.isNull() ? `` : ` // 0x${this.relativeVirtualAddress.toStr
                                     : instance.handle;
 
                             return target.invokeRaw.bind(target, handle);
+                        case "invokeSafe":
+                            const handle2 =
+                                instance instanceof Il2Cpp.ValueType
+                                    ? target.class.isValueType
+                                        ? instance.handle.sub(structMethodsRequireObjectInstances() ? Il2Cpp.Object.headerSize : 0)
+                                        : raise(`cannot invoke method ${target.class.type.name}::${target.name} against a value type, you must box it first`)
+                                    : target.class.isValueType
+                                    ? instance.handle.add(structMethodsRequireObjectInstances() ? 0 : Il2Cpp.Object.headerSize)
+                                    : instance.handle;
+
+                            return target.invokeRawSafe.bind(target, handle2);
                         case "overloads":
                             return function* () {
                                 for (const method of target[property]()) {

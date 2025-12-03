@@ -517,6 +517,10 @@ namespace Il2Cpp {
 
         get typeGetTypeEnum() {
             return r("il2cpp_type_get_type", "int", ["pointer"]);
+        },
+
+        get runtimeInvoke() {
+            return r("il2cpp_runtime_invoke", "pointer", ["pointer", "pointer", "pointer", "pointer"]);
         }
     };
 
